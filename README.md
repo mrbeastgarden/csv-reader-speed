@@ -17,12 +17,33 @@ stray CRs reported, quoted fields with `""` escapes and CR/LF read as LF,
 quote junk and unterminated quotes reported, short and long rows padded or
 cut to the first record's width.
 
-The speed comes from never reading one character at a time: unquoted fields
-jump with `indexOf` to the next comma, LF or CR and are taken as one slice;
-quoted fields jump to the next quote the same way, and a quoted segment is
-converted (CR/CRLF to LF) only when it actually holds one. On the practice
-set (6 cases, ~11 MB) it answers all 6 cases identically to csv-reader in
-about half the CPU time (~1.9× faster than the house baseline).
+## v2 — how it is faster
+
+Three changes over v1 (which read one field at a time with `indexOf` jumps):
+
+- **Two-path per line.** A record whose line holds no quote and no CR (or
+  only the CR of a CRLF) is taken as one slice and `split(',')` natively;
+  anything else — quoted fields, stray CRs, unterminated quotes — goes
+  through the exact slow path, field by field.
+- **Next-occurrence cache.** The first occurrence of `,`, LF, CR and `"`
+  at or after the current position is cached and only recomputed once the
+  scan moves past it, so the total scan is O(n) instead of O(n × fields).
+  The caches are invalidated only where the scan moves backwards (an
+  unterminated quote).
+- **Zero allocations per field.** The per-field result is no longer an
+  object; `ended` and `added` are variables scoped to the run.
+
+## Measured locally (21 Nov 2026)
+
+- Practice set (6 cases, ~11 MB): all 6 answers byte-identical to
+  csv-reader 1.0.0 and to v1.
+- Differential fuzz against v1 and the vendor reference: 2,000,000 /
+  2,000,000 cases identical, 0 divergences; 88 / 88 directed edge cases
+  identical.
+- Speed: `run()` ~1.89× faster than v1 in fresh processes (CPU ratio
+  0.529, z ≈ 11.7). The v1 entry scored 1,710,000 µs on the dev board
+  (134th of 164 when scored); v2 projects to ~904,000 µs — inside the
+  top 10 (10th place at 1,040,000 µs when measured).
 
 ## Files
 
@@ -37,3 +58,7 @@ Run it the way the grader does:
     mkdir -p out && MAKEFUN_INPUT_DIR=<practice/input> MAKEFUN_OUTPUT_DIR=out node main.ts
 
 Two runs on the same set write byte-identical `answers.json`.
+
+Or grade it with the kit's own sealed scorer (run from the kit directory):
+
+    node cli/makefun.mjs grade-local --kit . --bot <repo> --driver process
